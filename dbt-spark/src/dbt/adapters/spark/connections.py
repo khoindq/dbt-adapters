@@ -87,6 +87,7 @@ class SparkCredentials(Credentials):
     schema: Optional[str] = None  # type:ignore
     method: SparkConnectionMethod = None  # type: ignore
     database: Optional[str] = None  # type:ignore
+    catalog: Optional[str] = None  # Catalog name for 3-level namespace (Spark 3.4+)
     driver: Optional[str] = None
     cluster: Optional[str] = None
     endpoint: Optional[str] = None
@@ -114,6 +115,8 @@ class SparkCredentials(Credentials):
         data = super().__pre_deserialize__(data)
         if "database" not in data:
             data["database"] = None
+        if "catalog" not in data:
+            data["catalog"] = None
         return data
 
     @property

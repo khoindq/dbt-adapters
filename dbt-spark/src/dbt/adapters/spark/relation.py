@@ -47,4 +47,48 @@ class SparkRelation(BaseRelation):
                 "Got a spark relation with schema and database set to "
                 "include, but only one can be set"
             )
+
+        # Use catalog-aware rendering if catalog is present
+        if self.include_catalog():
+            return self.render_limited()
+
         return super().render()
+
+    def render_limited(self) -> str:
+        """
+        Render the relation name with catalog support.
+
+        When catalog is specified and not 'default', render as: catalog.schema.table
+        Otherwise, render as: schema.table (backward compatible)
+        """
+        # Build the relation name with catalog
+        parts = []
+
+        # Add catalog if present and not default
+        if self.include_catalog():
+            parts.append(self.quoted(self.catalog))
+
+        # Add schema
+        if self.include_policy.schema and self.schema:
+            parts.append(self.quoted(self.schema))
+
+        # Add identifier
+        if self.include_policy.identifier and self.identifier:
+            parts.append(self.quoted(self.identifier))
+
+        return ".".join(parts)
+
+    def include_catalog(self) -> bool:
+        """
+        Determine if catalog should be included in the rendered relation name.
+
+        Returns True if:
+        - catalog is set
+        - catalog is not 'default' (case-insensitive)
+        - catalog is not empty
+        """
+        if not self.catalog:
+            return False
+        if self.catalog.lower() == "default":
+            return False
+        return True

@@ -204,6 +204,9 @@ class SparkAdapter(SQLAdapter):
     ) -> List[BaseRelation]:
         """Aggregate relations with format metadata included."""
         relations = []
+        # Get catalog from credentials if specified
+        catalog = getattr(self.config.credentials, 'catalog', None)
+
         for row in row_list:
             _schema, name, information = relation_info_func(row)
 
@@ -217,6 +220,7 @@ class SparkAdapter(SQLAdapter):
             is_iceberg: bool = "Provider: iceberg" in information
 
             relation: BaseRelation = self.Relation.create(
+                catalog=catalog,
                 schema=_schema,
                 identifier=name,
                 type=rel_type,
@@ -273,7 +277,17 @@ class SparkAdapter(SQLAdapter):
         if not self.Relation.get_default_include_policy().database:
             database = None  # type: ignore
 
-        return super().get_relation(database, schema, identifier)
+        # Get catalog from credentials and pass it to the relation lookup
+        catalog = getattr(self.config.credentials, 'catalog', None)
+
+        # Call parent's get_relation but the returned relation will need catalog
+        relation = super().get_relation(database, schema, identifier)
+
+        # If relation found and catalog is configured, update the relation with catalog
+        if relation and catalog:
+            relation = relation.replace(catalog=catalog)
+
+        return relation
 
     def parse_describe_extended(
         self, relation: BaseRelation, raw_rows: AttrDict

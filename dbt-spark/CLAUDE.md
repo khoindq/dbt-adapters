@@ -8,6 +8,10 @@ This is the `dbt-spark` adapter, located in a subdirectory of the parent `dbt-ad
 
 **Important**: This is a subdirectory within a larger git repository. All git operations should be performed with awareness that the root is at `/Users/mini/workspace/dbt-adapters/`, but development work focuses on the `dbt-spark` subdirectory.
 
+### Catalog Support (3-Level Namespace)
+
+dbt-spark now supports 3-level namespace with catalog support (Spark 3.4+). When a catalog is specified in the profile, relations will be rendered as `catalog.schema.table`. When catalog is omitted or set to "default", the traditional 2-level namespace `schema.table` is used for backward compatibility.
+
 ## Development Setup
 
 ```bash
@@ -128,6 +132,14 @@ SQL macros are located in `src/dbt/include/spark/macros/`:
 
 ### Key Spark-Specific Concepts
 
+**Catalog Support (3-Level Namespace)**:
+- Spark 3.4+ introduces catalog support for 3-level namespace: `catalog.schema.table`
+- Configure `catalog` in profile credentials to use 3-level naming
+- When `catalog` is omitted or set to `"default"` (case-insensitive), uses 2-level naming for backward compatibility
+- `SparkRelation.include_catalog()` determines if catalog should be included in rendered SQL
+- Relations automatically render with catalog when specified: `catalog.schema.table`
+- **Usage in dbt models**: When catalog is configured, you can reference tables with `{{ ref('model_name') }}` and it will automatically use the 3-level namespace
+
 **Database vs Schema**: On Spark, `database` and `schema` are synonymous. The adapter enforces that if both are specified, they must match. Internally, the adapter uses `schema` and sets `database` to `None`.
 
 **Connection Methods**: Four distinct connection methods with different dependency requirements:
@@ -175,9 +187,36 @@ hatch run build:check-all
 - Dagger config: `dagger/` - Integration test orchestration
 - Docker config: `docker/` - Local development containers
 
+## Configuration Examples
+
+### Profile with Catalog Support
+
+To use 3-level namespace with catalog support (Spark 3.4+):
+
+```yaml
+spark_testing:
+  target: dev
+  outputs:
+    dev:
+      type: spark
+      method: thrift
+      host: 127.0.0.1
+      port: 10000
+      user: dbt
+      schema: analytics
+      catalog: my_catalog  # Add this for 3-level namespace support
+```
+
+When `catalog` is configured:
+- Tables render as: `my_catalog.analytics.my_table`
+- `ref()` and `source()` functions automatically include catalog
+- Set `catalog: default` or omit to use 2-level namespace
+
 ## Common Issues
 
 **Database/Schema confusion**: Remember that Spark treats database and schema as the same. Always use `schema` in profiles and ensure `database` is either omitted or matches `schema`.
+
+**Catalog configuration**: The `catalog` field is optional. When omitted or set to "default" (case-insensitive), dbt-spark uses 2-level namespace (`schema.table`) for backward compatibility. Only specify a catalog name when you need 3-level namespace support (Spark 3.4+).
 
 **Connection dependencies**: If encountering import errors, ensure the appropriate optional dependencies are installed (`pip install dbt-spark[ODBC]`, etc.)
 
