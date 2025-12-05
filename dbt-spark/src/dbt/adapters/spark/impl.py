@@ -160,8 +160,71 @@ class SparkAdapter(SQLAdapter):
     def quote(self, identifier: str) -> str:  # type:ignore
         return "`{}`".format(identifier)
 
+    def _build_information_string(
+        self,
+        table_type: str,
+        data_source_format: str,
+        table_owner: str,
+        storage_path: str,
+        comment: str,
+    ) -> str:
+        """
+        Build information string from information_schema columns
+        to maintain compatibility with existing parsing logic.
+        """
+        info_parts = []
+
+        # Map information_schema table_type to legacy format
+        if table_type and table_type.upper() == "VIEW":
+            info_parts.append("Type: VIEW")
+        else:
+            info_parts.append("Type: MANAGED")
+
+        # Add provider information from data_source_format
+        if data_source_format:
+            provider = data_source_format.lower()
+            info_parts.append(f"Provider: {provider}")
+
+        if table_owner:
+            info_parts.append(f"Owner: {table_owner}")
+
+        if storage_path:
+            info_parts.append(f"Location: {storage_path}")
+
+        if comment:
+            info_parts.append(f"Comment: {comment}")
+
+        return "\n".join(info_parts)
+
     def _get_relation_information(self, row: "agate.Row") -> RelationInfo:
-        """relation info was fetched with SHOW TABLES EXTENDED"""
+        """Relation info fetched from information_schema.tables"""
+        try:
+            table_catalog = row["table_catalog"] if "table_catalog" in row.keys() else None
+            table_schema = row["table_schema"]
+            table_name = row["table_name"]
+            table_type = row["table_type"] if "table_type" in row.keys() else ""
+            data_source_format = (
+                row["data_source_format"] if "data_source_format" in row.keys() else ""
+            )
+            table_owner = row["table_owner"] if "table_owner" in row.keys() else ""
+            comment = row["comment"] if "comment" in row.keys() else ""
+            storage_path = row["storage_path"] if "storage_path" in row.keys() else ""
+        except (KeyError, ValueError) as e:
+            raise DbtRuntimeError(f"Invalid value from information_schema.tables: {e}")
+
+        # Build information string compatible with existing parsing logic
+        information = self._build_information_string(
+            table_type=table_type or "",
+            data_source_format=data_source_format or "",
+            table_owner=table_owner or "",
+            storage_path=storage_path or "",
+            comment=comment or "",
+        )
+
+        return table_schema, table_name, information
+
+    def _get_relation_information_legacy(self, row: "agate.Row") -> RelationInfo:
+        """Relation info was fetched with SHOW TABLES EXTENDED (legacy method)"""
         try:
             _schema, name, _, information = row
         except ValueError:
@@ -212,9 +275,12 @@ class SparkAdapter(SQLAdapter):
                 if "Type: VIEW" in information
                 else RelationType.Table  # type:ignore
             )
-            is_delta: bool = "Provider: delta" in information
-            is_hudi: bool = "Provider: hudi" in information
-            is_iceberg: bool = "Provider: iceberg" in information
+
+            # Support both legacy format and new format (case insensitive)
+            information_lower = information.lower()
+            is_delta: bool = "provider: delta" in information_lower
+            is_hudi: bool = "provider: hudi" in information_lower
+            is_iceberg: bool = "provider: iceberg" in information_lower
 
             relation: BaseRelation = self.Relation.create(
                 schema=_schema,
@@ -230,23 +296,40 @@ class SparkAdapter(SQLAdapter):
         return relations
 
     def list_relations_without_caching(self, schema_relation: BaseRelation) -> List[BaseRelation]:
-        """Distinct Spark compute engines may not support the same SQL featureset. Thus, we must
-        try different methods to fetch relation information."""
+        """Fetch relation list using information_schema, with fallback to legacy commands.
+
+        Distinct Spark compute engines may not support the same SQL featureset. We try
+        information_schema first (modern approach), then fall back to SHOW TABLE EXTENDED.
+        """
 
         kwargs = {"schema_relation": schema_relation}
 
         try:
-            # Default compute engine behavior: show tables extended
-            show_table_extended_rows = self.execute_macro(LIST_RELATIONS_MACRO_NAME, kwargs=kwargs)
+            # Try information_schema approach first
+            info_schema_rows = self.execute_macro(LIST_RELATIONS_MACRO_NAME, kwargs=kwargs)
             return self._build_spark_relation_list(
-                row_list=show_table_extended_rows,
+                row_list=info_schema_rows,
                 relation_info_func=self._get_relation_information,
             )
         except DbtRuntimeError as e:
             errmsg = getattr(e, "msg", "")
-            if f"Database '{schema_relation}' not found" in errmsg:
+
+            # Handle schema not found
+            if f"Database '{schema_relation}' not found" in errmsg or f"Schema '{schema_relation.schema}' not found" in errmsg:
                 return []
-            # Iceberg compute engine behavior: show table
+
+            # Fallback to legacy SHOW TABLE EXTENDED if information_schema not available
+            if (
+                "SCHEMA_NOT_FOUND" in errmsg
+                or "information_schema" in errmsg.lower()
+                or "TABLE_OR_VIEW_NOT_FOUND" in errmsg
+            ):
+                logger.debug(
+                    f"information_schema not available, falling back to SHOW TABLE EXTENDED"
+                )
+                return self._list_relations_using_show_table_extended(schema_relation)
+
+            # Handle Iceberg v2 tables
             elif "SHOW TABLE EXTENDED is not supported for v2 tables" in errmsg:
                 # this happens with spark-iceberg with v2 iceberg tables
                 # https://issues.apache.org/jira/browse/SPARK-33393
@@ -268,6 +351,24 @@ class SparkAdapter(SQLAdapter):
                     f"Error while retrieving information about {schema_relation}: {errmsg}"
                 )
                 return []
+
+    def _list_relations_using_show_table_extended(
+        self, schema_relation: BaseRelation
+    ) -> List[BaseRelation]:
+        """Legacy fallback using SHOW TABLE EXTENDED"""
+        kwargs = {"schema_relation": schema_relation}
+        try:
+            show_table_extended_rows = self.execute_macro(
+                "list_relations_without_caching_legacy", kwargs=kwargs
+            )
+            return self._build_spark_relation_list(
+                row_list=show_table_extended_rows,
+                relation_info_func=self._get_relation_information_legacy,
+            )
+        except DbtRuntimeError as e:
+            errmsg = getattr(e, "msg", "")
+            logger.debug(f"Error with SHOW TABLE EXTENDED for {schema_relation}: {errmsg}")
+            return []
 
     def get_relation(self, database: str, schema: str, identifier: str) -> Optional[BaseRelation]:
         if not self.Relation.get_default_include_policy().database:

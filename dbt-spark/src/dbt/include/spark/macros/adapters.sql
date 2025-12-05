@@ -294,10 +294,29 @@
 
 {% macro spark__list_relations_without_caching(relation) %}
   {% call statement('list_relations_without_caching', fetch_result=True) -%}
-    show table extended in {{ relation.schema }} like '*'
+    select
+      table_catalog,
+      table_schema,
+      table_name,
+      table_type,
+      data_source_format,
+      table_owner,
+      comment,
+      storage_path
+    from information_schema.tables
+    where table_schema = '{{ relation.schema }}'
   {% endcall %}
 
   {% do return(load_result('list_relations_without_caching').table) %}
+{% endmacro %}
+
+{% macro spark__list_relations_without_caching_legacy(relation) %}
+  {#-- Legacy fallback for environments without information_schema --#}
+  {% call statement('list_relations_without_caching_legacy', fetch_result=True) -%}
+    show table extended in {{ relation.schema }} like '*'
+  {% endcall %}
+
+  {% do return(load_result('list_relations_without_caching_legacy').table) %}
 {% endmacro %}
 
 {% macro list_relations_show_tables_without_caching(schema_relation) %}
