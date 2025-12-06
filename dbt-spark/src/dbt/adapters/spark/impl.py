@@ -300,9 +300,19 @@ class SparkAdapter(SQLAdapter):
 
         Distinct Spark compute engines may not support the same SQL featureset. We try
         information_schema first (modern approach), then fall back to SHOW TABLE EXTENDED.
+
+        The information_schema approach can be disabled by setting the environment variable
+        DBT_SPARK_USE_INFORMATION_SCHEMA=false.
         """
 
         kwargs = {"schema_relation": schema_relation}
+
+        # Check if information_schema is enabled via environment variable (default: enabled)
+        use_information_schema = os.getenv("DBT_SPARK_USE_INFORMATION_SCHEMA", "true").lower() in ("true", "1", "yes")
+
+        if not use_information_schema:
+            logger.debug("information_schema disabled via DBT_SPARK_USE_INFORMATION_SCHEMA, using legacy method")
+            return self._list_relations_using_show_table_extended(schema_relation)
 
         try:
             # Try information_schema approach first

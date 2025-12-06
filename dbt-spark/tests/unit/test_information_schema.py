@@ -1,6 +1,8 @@
 """Tests for information_schema.tables migration"""
 import unittest
 import pytest
+import os
+from unittest.mock import patch, MagicMock
 from multiprocessing import get_context
 
 from dbt.adapters.spark import SparkAdapter
@@ -165,3 +167,75 @@ class TestInformationSchemaIntegration(unittest.TestCase):
         assert "Type: MANAGED" in info_string  # Non-VIEW becomes MANAGED
         assert "Provider: iceberg" in info_string
         assert "Owner: iceberg_user" in info_string
+
+    @patch.dict(os.environ, {"DBT_SPARK_USE_INFORMATION_SCHEMA": "false"})
+    def test_information_schema_disabled_via_env_var(self):
+        """Test that information_schema can be disabled via environment variable"""
+        adapter = SparkAdapter(self.target_http, get_context("spawn"))
+
+        # Mock the methods
+        with patch.object(adapter, '_list_relations_using_show_table_extended') as mock_legacy, \
+             patch.object(adapter, 'execute_macro') as mock_execute:
+
+            mock_legacy.return_value = []
+
+            # Create a mock schema relation
+            from dbt.adapters.spark import SparkRelation
+            schema_relation = SparkRelation.create(schema="test_schema")
+
+            # Call list_relations_without_caching
+            result = adapter.list_relations_without_caching(schema_relation)
+
+            # Verify that legacy method was called and information_schema was not
+            mock_legacy.assert_called_once_with(schema_relation)
+            mock_execute.assert_not_called()
+            assert result == []
+
+    @patch.dict(os.environ, {"DBT_SPARK_USE_INFORMATION_SCHEMA": "true"})
+    def test_information_schema_enabled_via_env_var(self):
+        """Test that information_schema is used when enabled via environment variable"""
+        adapter = SparkAdapter(self.target_http, get_context("spawn"))
+
+        # Mock the methods
+        with patch.object(adapter, 'execute_macro') as mock_execute, \
+             patch.object(adapter, '_build_spark_relation_list') as mock_build:
+
+            mock_execute.return_value = []
+            mock_build.return_value = []
+
+            # Create a mock schema relation
+            from dbt.adapters.spark import SparkRelation
+            schema_relation = SparkRelation.create(schema="test_schema")
+
+            # Call list_relations_without_caching
+            result = adapter.list_relations_without_caching(schema_relation)
+
+            # Verify that information_schema approach was used
+            mock_execute.assert_called_once()
+            assert result == []
+
+    def test_information_schema_enabled_by_default(self):
+        """Test that information_schema is enabled by default when env var is not set"""
+        # Ensure the env var is not set
+        if "DBT_SPARK_USE_INFORMATION_SCHEMA" in os.environ:
+            del os.environ["DBT_SPARK_USE_INFORMATION_SCHEMA"]
+
+        adapter = SparkAdapter(self.target_http, get_context("spawn"))
+
+        # Mock the methods
+        with patch.object(adapter, 'execute_macro') as mock_execute, \
+             patch.object(adapter, '_build_spark_relation_list') as mock_build:
+
+            mock_execute.return_value = []
+            mock_build.return_value = []
+
+            # Create a mock schema relation
+            from dbt.adapters.spark import SparkRelation
+            schema_relation = SparkRelation.create(schema="test_schema")
+
+            # Call list_relations_without_caching
+            result = adapter.list_relations_without_caching(schema_relation)
+
+            # Verify that information_schema approach was used
+            mock_execute.assert_called_once()
+            assert result == []
